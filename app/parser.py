@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import subprocess
+import sys
 from typing import Iterable, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -83,12 +86,47 @@ def fetch_all_tatami_html_rendered(source_url: str, tatami_ids: Iterable[int]) -
         logger.exception("Playwright is not available; falling back to static requests: %s", exc)
         return {tatami_id: fetch_html_static(source_url, tatami_id) for tatami_id in tatami_ids}
 
-    html_by_tatami: dict[int, str] = {}
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
+    def _launch_browser(playwright):
+        return playwright.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
+
+    def _install_chromium_at_runtime() -> None:
+        logger.warning(
+            "Playwright Chromium executable is missing. Attempting one-time runtime install: %s",
+            " ".join([sys.executable, "-m", "playwright", "install", "chromium"]),
+        )
+        try:
+            env = os.environ.copy()
+            env.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=240,
+                env=env,
+            )
+            if result.stdout:
+                logger.info("Runtime Playwright install output:\n%s", result.stdout[-4000:])
+        except Exception:
+            logger.exception("Runtime Playwright Chromium install failed.")
+            raise
+
+    html_by_tatami: dict[int, str] = {}
+    with sync_playwright() as p:
+        try:
+            browser = _launch_browser(p)
+        except Exception as exc:
+            message = str(exc)
+            if "Executable doesn't exist" in message or "playwright install" in message:
+                logger.warning("Playwright browser launch failed because Chromium is missing: %s", exc)
+                _install_chromium_at_runtime()
+                browser = _launch_browser(p)
+            else:
+                raise
         try:
             page = browser.new_page(user_agent=Config.USER_AGENT)
             for tatami_id in tatami_ids:

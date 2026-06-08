@@ -9,6 +9,7 @@ This version is designed for Render and uses:
 - Server-Sent Events (SSE) to push refreshed data to browsers.
 - A single shared in-memory cache so 10 connected browsers do not cause 10 separate scrape cycles.
 - Automatic Tatami 1-8 fetching. The UI no longer asks for Tatami IDs.
+- Pinned dependency/runtime set: Python 3.14, `lxml==6.1.1`, and `playwright==1.60.0`.
 
 ## How it works
 
@@ -44,7 +45,7 @@ services:
     name: kumite-team-viewer
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt && playwright install chromium
+    buildCommand: python -m pip install --upgrade pip && python -m pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
     startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 20 --timeout 300 --keep-alive 75 --access-logfile - --error-logfile -
 ```
 
@@ -66,8 +67,8 @@ Use **one Gunicorn worker**. This is important because the cache and server-side
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
+python -m pip install -r requirements.txt
+PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
 python run.py
 ```
 
@@ -116,3 +117,49 @@ The source K2 site fills the table with JavaScript after the initial page load. 
 
 - Removed the Category column from the main table.
 - Removed the hint text and color legend from the footer.
+
+## Render Playwright build command
+
+This version uses `python -m playwright install chromium` instead of the bare `playwright install chromium` command. This avoids Render build failures where the `playwright` console script is not on `PATH` even though the Python package was installed.
+
+If you created a normal Render Web Service instead of a Blueprint, check the service **Settings → Build Command** and set it to:
+
+```bash
+python -m pip install --upgrade pip && python -m pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
+```
+
+If you deployed via a Render Blueprint, push the updated `render.yaml` and sync/redeploy.
+
+## Render Playwright browser install note
+
+This version sets `PLAYWRIGHT_BROWSERS_PATH=0` so the Chromium browser downloaded by Playwright is stored with the Python environment instead of Render's external cache directory. This avoids the runtime error:
+
+```text
+BrowserType.launch: Executable doesn't exist at /opt/render/.cache/ms-playwright/...
+```
+
+Use this Render build command:
+
+```bash
+python -m pip install --upgrade pip && python -m pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
+```
+
+Also set these environment variables in Render if your dashboard settings override `render.yaml`:
+
+```text
+PLAYWRIGHT_BROWSERS_PATH=0
+PYTHON_VERSION=3.14
+PYTHONUNBUFFERED=1
+```
+
+The app also has a one-time runtime fallback: if Chromium is still missing, it will try `python -m playwright install chromium` once and then retry launching the browser. The runtime fallback inherits `PLAYWRIGHT_BROWSERS_PATH=0`, so it installs to the same location used by the build command.
+
+## v13 runtime pin update
+
+This package keeps the browser-install correction but uses the required runtime/dependency versions:
+
+```text
+Python 3.14
+lxml==6.1.1
+playwright==1.60.0
+```
