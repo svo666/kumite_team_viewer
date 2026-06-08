@@ -3,17 +3,14 @@ services:
     name: kumite-team-viewer
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn wsgi:app --workers 1 --threads 8 --timeout 120
-    healthCheckPath: /healthz
+    buildCommand: pip install -r requirements.txt && playwright install chromium
+    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 20 --timeout 300 --keep-alive 75 --access-logfile - --error-logfile -
     envVars:
       - key: DEFAULT_SOURCE_URL
         value: https://www.k2.main1.hu/index.php?p=competitionschedule&compid=504&tatamiid=0&slsession=a9315eb958
-      - key: DEFAULT_TATAMI_IDS
-        value: 1,2,3,4
-      - key: DEFAULT_POLL_SECONDS
+      - key: SERVER_POLL_SECONDS
         value: 60
       - key: CACHE_TTL_SECONDS
         value: 55
-      - key: REQUEST_TIMEOUT_SECONDS
+      - key: BROWSER_TIMEOUT_SECONDS
         value: 20

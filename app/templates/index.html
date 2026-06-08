@@ -7,45 +7,33 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
 </head>
 <body>
-<header>
-  <div>
-    <h1>Kumite Team Viewer</h1>
-    <p>Combines all configured tatamis and filters fights by team.</p>
+<main class="app-shell">
+  <section class="controls">
+    <label>Source URL
+      <input id="sourceUrl" type="url" value="{{ default_source_url }}">
+    </label>
+    <label>Team
+      <select id="teamSelect"><option value="">All teams</option></select>
+    </label>
+    <button id="refreshBtn" type="button">Refresh now</button>
+  </section>
+
+  <div class="table-wrap">
+    <table id="scheduleTable">
+      <thead id="scheduleHead"></thead>
+      <tbody id="scheduleBody"></tbody>
+    </table>
   </div>
-  <button id="refreshBtn" type="button">Refresh now</button>
-</header>
 
-<section class="controls">
-  <label>Source URL
-    <input id="sourceUrl" type="url" value="{{ default_source_url }}">
-  </label>
-  <label>Tatami IDs
-    <input id="tatamiIds" type="text" value="{{ default_tatami_ids }}" placeholder="1,2,3,4">
-  </label>
-  <label>Team
-    <select id="teamSelect"><option value="">All teams</option></select>
-  </label>
-  <label>Browser poll seconds
-    <input id="pollSeconds" type="number" min="30" step="5" value="{{ default_poll_seconds }}">
-  </label>
-</section>
+  <footer class="page-footer">
+    <section class="status">
+      <span id="connectionText">Connecting...</span>
+      <span id="statusText">Waiting for first server refresh.</span>
+      <span id="errorText" class="error"></span>
+    </section>
 
-<section class="status">
-  <span id="statusText">Not loaded yet.</span>
-  <span id="errorText" class="error"></span>
-</section>
-
-<div class="legend">
-  <span><b class="swatch current"></b> current fight</span>
-  <span><b class="swatch winner"></b> winner</span>
-</div>
-
-<div class="table-wrap">
-  <table id="scheduleTable">
-    <thead id="scheduleHead"></thead>
-    <tbody id="scheduleBody"></tbody>
-  </table>
-</div>
+  </footer>
+</main>
 
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
