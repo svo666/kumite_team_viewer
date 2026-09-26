@@ -7,7 +7,7 @@ class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-change-me")
     DEFAULT_SOURCE_URL = os.environ.get(
         "DEFAULT_SOURCE_URL",
-        "https://www.k2.main1.hu/index.php?p=competitionschedule&compid=504&tatamiid=0&slsession=a9315eb958",
+        "https://www.k2.main1.hu/index.php?p=competitionschedule&compid=514&tatamiid=0&slsession=bb2f0bd092",
     )
     # The competition page uses tatamiid=0 as the selector/all URL, but the
     # schedule table must be fetched separately for tatamiid 1..8.
