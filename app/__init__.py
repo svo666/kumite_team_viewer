@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
+from time import monotonic
 from typing import Any
 
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import Flask, Response, g, jsonify, render_template, request, stream_with_context
 
 from .cache import FightCache
 from .config import Config
+
+logger = logging.getLogger(__name__)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,6 +31,23 @@ def _sse(event: str, data: Any) -> str:
 def create_app(config_class=Config) -> Flask:
     app = Flask(__name__)
     app.config.from_object(config_class)
+
+    @app.before_request
+    def start_request_timer():
+        g.request_started_at = monotonic()
+
+    @app.after_request
+    def log_request_performance(response):
+        started_at = getattr(g, "request_started_at", None)
+        if started_at is not None:
+            logger.info(
+                "event=http_response_ready endpoint=%s method=%s status=%s duration_ms=%.1f",
+                request.endpoint or "unmatched",
+                request.method,
+                response.status_code,
+                (monotonic() - started_at) * 1000,
+            )
+        return response
 
     # Start one server-side poller per web-service process. Render should run this
     # project with a single Gunicorn worker so the in-memory cache is shared by
@@ -62,7 +82,7 @@ def create_app(config_class=Config) -> Flask:
     def api_refresh():
         """Manual refresh button endpoint.
 
-        The server-side poller refreshes automatically once per minute. This
+        The server-side poller refreshes automatically at its configured interval. This
         endpoint forces an immediate refresh and also wakes all SSE clients once
         the cache changes.
         """
@@ -71,7 +91,7 @@ def create_app(config_class=Config) -> Flask:
         selected_team = payload.get("team") or request.form.get("team") or ""
 
         cache.set_source_url(source_url)
-        cache.refresh_if_needed(source_url, force=True)
+        cache.refresh_if_needed(source_url, force=True, reset_tatamis=True)
         return jsonify(cache.snapshot(selected_team))
 
     @app.get("/api/events")

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
+from time import monotonic
 from typing import Iterable, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -14,6 +17,19 @@ from .models import Competitor, Fight
 logger = logging.getLogger(__name__)
 
 _COMPETITOR_RE = re.compile(r"^(?P<name>.*?)\s*\((?P<meta>.*?)\)\s*$", re.S)
+
+
+def sanitize_url_for_log(url: str) -> str:
+    """Return a URL location without credentials, query parameters, or fragment."""
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        port = f":{parts.port}" if parts.port is not None else ""
+    except ValueError:
+        return "<invalid-url>"
+    return f"{parts.scheme}://{hostname}{port}{parts.path}"
 
 
 def set_query_param(url: str, key: str, value: str | int) -> str:
@@ -41,20 +57,33 @@ def fetch_html_static(source_url: str, tatami_id: int, timeout: int = Config.REQ
     fallback and for diagnostics, but rendered fetching is preferred.
     """
     url = tatami_url(source_url, tatami_id)
-    logger.info("Fetching static tatami HTML: tatami=%s url=%s", tatami_id, url)
-    response = requests.get(
-        url,
-        timeout=timeout,
-        headers={"User-Agent": Config.USER_AGENT},
+    safe_url = sanitize_url_for_log(url)
+    started_at = monotonic()
+    try:
+        response = requests.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": Config.USER_AGENT},
+        )
+    except Exception as exc:
+        logger.error(
+            "event=tatami_fetch_failed mode=static tatami=%s source=%s "
+            "total_ms=%.1f error_type=%s",
+            tatami_id,
+            safe_url,
+            (monotonic() - started_at) * 1000,
+            type(exc).__name__,
+        )
+        raise
+    logger.info(
+        "event=tatami_fetch mode=static tatami=%s source=%s status=%s upstream_elapsed_ms=%.1f html_bytes=%s",
+        tatami_id,
+        safe_url,
+        response.status_code,
+        response.elapsed.total_seconds() * 1000,
+        len(response.content),
     )
     response.raise_for_status()
-    logger.info(
-        "Fetched static tatami HTML: tatami=%s url=%s status=%s size=%s",
-        tatami_id,
-        url,
-        response.status_code,
-        len(response.text),
-    )
     return response.text
 
 
@@ -77,53 +106,126 @@ def fetch_all_tatami_html_rendered(source_url: str, tatami_ids: Iterable[int]) -
     `playwright install chromium` from render.yaml.
     """
     try:
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-        from playwright.sync_api import sync_playwright
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.async_api import async_playwright
     except Exception as exc:  # pragma: no cover - only hit when dependency missing
-        logger.exception("Playwright is not available; falling back to static requests: %s", exc)
-        return {tatami_id: fetch_html_static(source_url, tatami_id) for tatami_id in tatami_ids}
+        logger.warning("Playwright unavailable; falling back to static requests. error_type=%s", type(exc).__name__)
+        return _fetch_static_html_concurrently(source_url, tatami_ids)
 
-    html_by_tatami: dict[int, str] = {}
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        try:
-            page = browser.new_page(user_agent=Config.USER_AGENT)
-            for tatami_id in tatami_ids:
+    async def fetch_all() -> dict[int, str]:
+        html_by_tatami: dict[int, str] = {}
+        semaphore = asyncio.Semaphore(Config.TATAMI_FETCH_CONCURRENCY)
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+
+            async def fetch_one(tatami_id: int) -> tuple[int, str]:
                 url = tatami_url(source_url, tatami_id)
-                logger.info("Fetching rendered tatami data: tatami=%s url=%s", tatami_id, url)
-                page.goto(url, wait_until="domcontentloaded", timeout=Config.BROWSER_TIMEOUT_SECONDS * 1000)
-                try:
-                    page.wait_for_function(
-                        """
-                        () => Array.from(document.querySelectorAll('#csc_maintable_tbody tr'))
-                          .some(row => {
-                            const cell = row.querySelector('[name="s_idxx"]');
-                            return cell && cell.textContent.trim() && cell.textContent.trim() !== '-';
-                          })
-                        """,
-                        timeout=Config.BROWSER_TIMEOUT_SECONDS * 1000,
-                    )
-                except PlaywrightTimeoutError:
-                    logger.warning(
-                        "Timed out waiting for rendered rows: tatami=%s url=%s. Capturing current HTML anyway.",
-                        tatami_id,
-                        url,
-                    )
-                html = page.content()
-                logger.info(
-                    "Fetched rendered tatami data: tatami=%s url=%s size=%s has_rows=%s",
-                    tatami_id,
-                    url,
-                    len(html),
-                    _html_has_fight_rows(html),
-                )
-                html_by_tatami[tatami_id] = html
-        finally:
-            browser.close()
-    return html_by_tatami
+                safe_url = sanitize_url_for_log(url)
+                async with semaphore:
+                    page = None
+                    started_at = monotonic()
+                    try:
+                        page = await browser.new_page(user_agent=Config.USER_AGENT)
+                        navigation_started_at = monotonic()
+                        response = await page.goto(
+                            url,
+                            wait_until="domcontentloaded",
+                            timeout=Config.BROWSER_TIMEOUT_SECONDS * 1000,
+                        )
+                        navigation_ms = (monotonic() - navigation_started_at) * 1000
+                        timing = await page.evaluate(
+                            """() => {
+                              const entry = performance.getEntriesByType('navigation')[0];
+                              return entry ? {
+                                upstream_ttfb_ms: entry.responseStart - entry.requestStart,
+                                upstream_download_ms: entry.responseEnd - entry.responseStart
+                              } : {};
+                            }"""
+                        )
+                        row_wait_started_at = monotonic()
+                        rows_ready = True
+                        try:
+                            await page.wait_for_function(
+                                """
+                                () => Array.from(document.querySelectorAll('#csc_maintable_tbody tr'))
+                                  .some(row => {
+                                    const cell = row.querySelector('[name="s_idxx"]');
+                                    return cell && cell.textContent.trim() && cell.textContent.trim() !== '-';
+                                  })
+                                """,
+                                timeout=Config.BROWSER_TIMEOUT_SECONDS * 1000,
+                            )
+                        except PlaywrightTimeoutError:
+                            rows_ready = False
+                            logger.warning(
+                                "event=tatami_rows_timeout tatami=%s source=%s",
+                                tatami_id,
+                                safe_url,
+                            )
+                        row_wait_ms = (monotonic() - row_wait_started_at) * 1000
+                        html = await page.content()
+                        logger.info(
+                            "event=tatami_fetch mode=rendered tatami=%s source=%s status=%s "
+                            "navigation_ms=%.1f upstream_ttfb_ms=%s upstream_download_ms=%s "
+                            "row_wait_ms=%.1f rows_ready=%s total_ms=%.1f html_bytes=%s has_rows=%s",
+                            tatami_id,
+                            safe_url,
+                            response.status if response is not None else None,
+                            navigation_ms,
+                            round(timing.get("upstream_ttfb_ms", 0), 1) if timing else None,
+                            round(timing.get("upstream_download_ms", 0), 1) if timing else None,
+                            row_wait_ms,
+                            rows_ready,
+                            (monotonic() - started_at) * 1000,
+                            len(html),
+                            _html_has_fight_rows(html),
+                        )
+                        return tatami_id, html
+                    except Exception as exc:
+                        logger.error(
+                            "event=tatami_fetch_failed mode=rendered tatami=%s source=%s "
+                            "total_ms=%.1f error_type=%s",
+                            tatami_id,
+                            safe_url,
+                            (monotonic() - started_at) * 1000,
+                            type(exc).__name__,
+                        )
+                        return tatami_id, ""
+                    finally:
+                        if page is not None:
+                            try:
+                                await page.close()
+                            except Exception as exc:
+                                logger.error(
+                                    "Failed to close browser page for tatami %s. error_type=%s",
+                                    tatami_id,
+                                    type(exc).__name__,
+                                )
+
+            try:
+                results = await asyncio.gather(*(fetch_one(tatami_id) for tatami_id in tatami_ids))
+                html_by_tatami.update(results)
+            finally:
+                await browser.close()
+        return html_by_tatami
+
+    return asyncio.run(fetch_all())
+
+
+def _fetch_static_html_concurrently(source_url: str, tatami_ids: Iterable[int]) -> dict[int, str]:
+    def fetch_one(tatami_id: int) -> tuple[int, str]:
+        try:
+            return tatami_id, fetch_html_static(source_url, tatami_id)
+        except Exception as exc:
+            logger.error("event=tatami_fetch_failed mode=static tatami=%s error_type=%s", tatami_id, type(exc).__name__)
+            return tatami_id, ""
+
+    with ThreadPoolExecutor(max_workers=Config.TATAMI_FETCH_CONCURRENCY) as executor:
+        return dict(executor.map(fetch_one, tatami_ids))
 
 
 def _clean_text(element) -> str:
@@ -156,10 +258,15 @@ def _cell_by_name(row, name: str):
 
 
 def parse_tatami_html(html: str, tatami_id: int, tatami_name: Optional[str] = None) -> list[Fight]:
+    started_at = monotonic()
     soup = BeautifulSoup(html, "lxml")
     table = soup.find("table", id="csc_tatamicontent")
     if table is None:
-        logger.warning("No csc_tatamicontent table found for tatami %s", tatami_id)
+        logger.warning(
+            "event=tatami_parse tatami=%s duration_ms=%.1f fights=0 table_found=false",
+            tatami_id,
+            (monotonic() - started_at) * 1000,
+        )
         return []
 
     fights: list[Fight] = []
@@ -195,8 +302,6 @@ def parse_tatami_html(html: str, tatami_id: int, tatami_name: Optional[str] = No
             )
         )
 
-    logger.info("Parsed tatami %s: fights=%s", tatami_id, len(fights))
-
     first_unfinished_seen = False
     marked: list[Fight] = []
     for fight in fights:
@@ -219,34 +324,52 @@ def parse_tatami_html(html: str, tatami_id: int, tatami_name: Optional[str] = No
                 is_current=current,
             )
         )
+    logger.info(
+        "event=tatami_parse tatami=%s duration_ms=%.1f fights=%s table_found=true",
+        tatami_id,
+        (monotonic() - started_at) * 1000,
+        len(marked),
+    )
     return marked
 
 
-def get_all_fights(source_url: str, tatami_ids: Iterable[int] = Config.TATAMI_IDS) -> list[Fight]:
+def get_fights_by_tatami(
+    source_url: str,
+    tatami_ids: Iterable[int] = Config.TATAMI_IDS,
+) -> dict[int, list[Fight]]:
+    started_at = monotonic()
     tatami_ids = tuple(tatami_ids)
-    all_fights: list[Fight] = []
-
-    logger.info("Starting rendered refresh for source URL: %s", source_url)
+    safe_url = sanitize_url_for_log(source_url)
+    logger.info("event=scrape_started source=%s tatamis=%s", safe_url, len(tatami_ids))
     html_by_tatami = fetch_all_tatami_html_rendered(source_url, tatami_ids)
+    fights_by_tatami = {
+        tatami_id: parse_tatami_html(html_by_tatami.get(tatami_id, ""), tatami_id)
+        for tatami_id in tatami_ids
+    }
 
-    for tatami_id in tatami_ids:
-        html = html_by_tatami.get(tatami_id, "")
-        fights = parse_tatami_html(html, tatami_id)
+    tatamis_needing_fallback = [tatami_id for tatami_id, fights in fights_by_tatami.items() if not fights]
+    for tatami_id, html in _fetch_static_html_concurrently(source_url, tatamis_needing_fallback).items():
+        logger.warning("No fights parsed from rendered HTML for tatami %s; tried static fallback", tatami_id)
+        fights_by_tatami[tatami_id] = parse_tatami_html(html, tatami_id)
 
-        # Extra safety: if rendered fetch produced no rows, try static once. This
-        # helps local tests and gives clearer Render logs.
-        if not fights:
-            logger.warning("No fights parsed from rendered HTML for tatami %s; trying static fallback", tatami_id)
-            try:
-                static_html = fetch_html_static(source_url, tatami_id)
-                fights = parse_tatami_html(static_html, tatami_id)
-            except Exception as exc:
-                logger.exception("Static fallback failed for tatami %s: %s", tatami_id, exc)
+    logger.info(
+        "event=scrape_completed source=%s duration_ms=%.1f tatamis=%s "
+        "active_tatamis=%s total_fights=%s",
+        safe_url,
+        (monotonic() - started_at) * 1000,
+        len(tatami_ids),
+        sum(bool(fights) for fights in fights_by_tatami.values()),
+        sum(len(fights) for fights in fights_by_tatami.values()),
+    )
+    return fights_by_tatami
 
-        all_fights.extend(fights)
 
-    logger.info("Completed refresh for source URL: %s total_fights=%s", source_url, len(all_fights))
-    return all_fights
+def get_all_fights(source_url: str, tatami_ids: Iterable[int] = Config.TATAMI_IDS) -> list[Fight]:
+    return [
+        fight
+        for fights in get_fights_by_tatami(source_url, tatami_ids).values()
+        for fight in fights
+    ]
 
 
 def teams_from_fights(fights: Iterable[Fight]) -> list[str]:

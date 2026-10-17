@@ -14,11 +14,12 @@ class Config:
     TATAMI_IDS = tuple(range(1, 9))
 
     # Server-side polling interval. Browsers receive updates via Server-Sent Events.
-    SERVER_POLL_SECONDS = int(os.environ.get("SERVER_POLL_SECONDS", "15"))
-    CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "55"))
+    SERVER_POLL_SECONDS = int(os.environ.get("SERVER_POLL_SECONDS", "45"))
+    CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "45"))
 
     REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "5"))
     BROWSER_TIMEOUT_SECONDS = int(os.environ.get("BROWSER_TIMEOUT_SECONDS", "5"))
+    TATAMI_FETCH_CONCURRENCY = 3
 
     USER_AGENT = os.environ.get(
         "USER_AGENT",

@@ -44,7 +44,7 @@ function connectEvents() {
     state.latestData = data;
     updateTeamOptions(data.teams);
     renderCurrentFilter();
-    setConnection(`Connected. Server polls every ${data.server_poll_seconds || 30} seconds.`);
+    setConnection(`Connected. Server polls every ${data.server_poll_seconds || 45} seconds.`);
   });
 
   es.onerror = () => {

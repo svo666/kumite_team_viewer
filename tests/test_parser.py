@@ -1,13 +1,19 @@
 from pathlib import Path
 
 from app.config import Config
-from app.parser import parse_tatami_html, tatami_url, teams_from_fights
+from app.parser import parse_tatami_html, sanitize_url_for_log, tatami_url, teams_from_fights
 
 
 def test_tatami_url_replaces_zero_with_requested_id():
     url = "https://www.k2.main1.hu/index.php?p=competitionschedule&compid=512&slsession=61d96bcdda"
     assert "tatamiid=8" in tatami_url(url, 8)
     assert "slsession=abc" in tatami_url(url, 8)
+
+
+def test_log_url_omits_credentials_query_and_fragment():
+    url = "https://user:pass@example.test/schedule?token=secret&tatamiid=3#section"
+
+    assert sanitize_url_for_log(url) == "https://example.test/schedule"
 
 
 def test_default_tatamis_are_one_to_eight():
