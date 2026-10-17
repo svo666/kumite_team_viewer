@@ -15,7 +15,7 @@ This version is designed for Render and uses:
 1. Configure `DEFAULT_SOURCE_URL` with a competition URL such as:
 
    ```text
-   https://www.k2.main1.hu/index.php?p=competitionschedule&compid=514&tatamiid=0&slsession=47390dcaf1
+   https://www.xzy.com
    ```
 
 2. The backend generates and renders these URLs automatically:
@@ -90,7 +90,7 @@ http://127.0.0.1:5000
 Every source fetch is logged. Render logs will show lines such as:
 
 ```text
-Fetching rendered tatami data: tatami=1 url=https://www.k2.main1.hu/index.php?p=competitionschedule&compid=504&tatamiid=1&slsession=...
+Fetching rendered tatami data: tatami=1 url=https://www.xyz.com
 Fetched rendered tatami data: tatami=1 url=... size=123456 has_rows=True
 ```
 

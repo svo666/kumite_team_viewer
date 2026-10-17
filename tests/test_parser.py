@@ -5,7 +5,7 @@ from app.parser import parse_tatami_html, tatami_url, teams_from_fights
 
 
 def test_tatami_url_replaces_zero_with_requested_id():
-    url = "https://www.k2.main1.hu/index.php?p=competitionschedule&compid=504&tatamiid=0&slsession=abc"
+    url = "https://www.k2.main1.hu/index.php?p=competitionschedule&compid=512&slsession=61d96bcdda"
     assert "tatamiid=8" in tatami_url(url, 8)
     assert "slsession=abc" in tatami_url(url, 8)
 
