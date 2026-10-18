@@ -4,7 +4,7 @@ Flask application for showing karate fights from the K2 competition schedule sit
 
 This version is designed for Render and uses:
 
-- Playwright/Chromium to render the JavaScript-filled source table.
+- The source site's AJAX endpoint to fetch schedule data directly, without running a browser.
 - Server-side polling every 45 seconds.
 - Server-Sent Events (SSE) to push refreshed data to browsers.
 - A single shared in-memory cache so 10 connected browsers do not cause 10 separate scrape cycles.
@@ -18,17 +18,9 @@ This version is designed for Render and uses:
    https://www.xzy.com
    ```
 
-2. The backend generates and renders these URLs automatically:
-
-   ```text
-   ...&tatamiid=1&...
-   ...&tatamiid=2&...
-   ...
-   ...&tatamiid=8&...
-   ```
-
-3. A background polling thread refreshes enabled tatamis every `SERVER_POLL_SECONDS`, default `45`. Fetches run concurrently with a limit of three tatamis.
-4. Tatamis with no parseable fights are disabled for automatic refreshes. **Refresh now** re-enables all tatamis and retries them.
+2. The backend loads the competition page to obtain its current session identifier, then requests schedule JSON for tatamis 1-8.
+3. A background polling thread refreshes enabled tatamis every `SERVER_POLL_SECONDS`, default `45`.
+4. Empty tatamis are disabled for automatic refreshes. **Refresh now** re-enables all tatamis and retries them.
 5. Browsers connect to `/api/events` using Server-Sent Events.
 6. After every server refresh, all connected browsers receive the updated table.
 7. Team filtering happens in the browser using the latest server snapshot, so changing the team filter does not scrape the source site again.
@@ -45,7 +37,7 @@ services:
     name: kumite-team-viewer
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt && playwright install chromium
+    buildCommand: pip install -r requirements.txt
     startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 20 --timeout 300 --keep-alive 75 --access-logfile - --error-logfile -
 ```
 
@@ -55,12 +47,11 @@ Use **one Gunicorn worker**. This is important because the cache and server-side
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `DEFAULT_SOURCE_URL` | sample K2 URL | Base competition URL. `tatamiid` is replaced with 1-8 automatically. |
+| `DEFAULT_SOURCE_URL` | sample K2 URL | Competition schedule URL. |
 | `SERVER_POLL_SECONDS` | `45` | How often the server refreshes enabled tatamis. |
 | `CACHE_TTL_SECONDS` | `45` | Prevents duplicate event-triggered refreshes within the cache TTL. |
-| `BROWSER_TIMEOUT_SECONDS` | `5` | Max seconds Playwright waits for the JavaScript-filled table. |
-| `REQUEST_TIMEOUT_SECONDS` | `5` | Timeout for the static fallback request. |
-| `USER_AGENT` | app default | User-Agent used by requests/Playwright. |
+| `REQUEST_TIMEOUT_SECONDS` | `15` | Timeout for each source page or AJAX request. |
+| `USER_AGENT` | app default | User-Agent used by source requests. |
 
 ## Local development
 
@@ -68,7 +59,6 @@ Use **one Gunicorn worker**. This is important because the cache and server-side
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
 python run.py
 ```
 
@@ -91,20 +81,20 @@ http://127.0.0.1:5000
 Performance logs are emitted as key-value records in the hosting logs:
 
 ```text
-event=tatami_fetch mode=rendered tatami=1 status=200 navigation_ms=... upstream_ttfb_ms=... row_wait_ms=... total_ms=...
-event=tatami_parse tatami=1 duration_ms=... fights=...
+event=competition_context_fetched status=200 duration_ms=... groups=...
+event=tatami_fetch mode=ajax tatami=1 status=200 duration_ms=... records=... fights=...
 event=scrape_completed duration_ms=... total_fights=...
 event=cache_refresh_completed duration_ms=... fights=... disabled_tatamis=...
 event=http_response_ready endpoint=api_refresh status=200 duration_ms=...
 ```
 
-Rendered navigation duration includes browser navigation; `upstream_ttfb_ms` is the document response's browser Navigation Timing measurement, while `row_wait_ms` measures the JavaScript-populated schedule wait. Static fallback records Requests' elapsed time to response headers. For long-term comparisons, track p50/p95 durations, status codes, timeout/failure counts, and fight counts across refreshes. The HTTP response event measures time until Flask creates the response; for `/api/events` this is stream setup time, not the lifetime of the SSE connection.
+AJAX logs record the per-request duration, returned schedule record count, and parsed fight count. For long-term comparisons, track p50/p95 durations, status codes, timeout/failure counts, and fight counts across refreshes. The HTTP response event measures time until Flask creates the response; for `/api/events` this is stream setup time, not the lifetime of the SSE connection.
 
 Source locations in logs omit credentials, query parameters, and fragments so session tokens are not written to logs. The Render Gunicorn access-log format also omits request query strings, and the local Werkzeug access log is suppressed in favor of the safe application request-duration event. Do not add raw URLs or exception messages from HTTP/browser libraries to log records; they may contain sensitive query strings.
 
 ## Notes
 
-The source K2 site fills the table with JavaScript after the initial page load. Plain `requests.get()` often returns the empty shell table, so this project uses Playwright to wait for rows to appear before parsing.
+The source K2 site fills its schedule table with JavaScript, but the page obtains the underlying schedule from `z_ajaxcollector.php`. The app requests that JSON endpoint directly and uses the page's current competition session identifier.
 
 ## v5 UI changes
 

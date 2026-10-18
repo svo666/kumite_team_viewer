@@ -4,4 +4,3 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 lxml
 python-dotenv==1.0.1
-playwright

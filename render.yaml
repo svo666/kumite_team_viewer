@@ -3,7 +3,7 @@ services:
     name: kumite-team-viewer
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt && playwright install chromium
+    buildCommand: pip install -r requirements.txt
     startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 20 --timeout 300 --keep-alive 75 --access-logfile - --access-logformat '%(h)s %(m)s %(U)s %(H)s %(s)s %(D)s' --error-logfile -
     envVars:
       - key: DEFAULT_SOURCE_URL
@@ -12,5 +12,3 @@ services:
         value: 45
       - key: CACHE_TTL_SECONDS
         value: 45
-      - key: BROWSER_TIMEOUT_SECONDS
-        value: 30

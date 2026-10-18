@@ -9,17 +9,14 @@ class Config:
         "DEFAULT_SOURCE_URL",
         "https://www.k2.main1.hu/index.php?p=competitionschedule&compid=512&slsession=61d96bcdda"
     )
-    # The competition page uses tatamiid=0 as the selector/all URL, but the
-    # schedule table must be fetched separately for tatamiid 1..8.
+    # Fetch the schedule separately for each supported tatami.
     TATAMI_IDS = tuple(range(1, 9))
 
     # Server-side polling interval. Browsers receive updates via Server-Sent Events.
     SERVER_POLL_SECONDS = int(os.environ.get("SERVER_POLL_SECONDS", "45"))
     CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "45"))
 
-    REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "5"))
-    BROWSER_TIMEOUT_SECONDS = int(os.environ.get("BROWSER_TIMEOUT_SECONDS", "5"))
-    TATAMI_FETCH_CONCURRENCY = 1
+    REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "15"))
 
     USER_AGENT = os.environ.get(
         "USER_AGENT",
