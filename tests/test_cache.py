@@ -4,6 +4,20 @@ from app.cache import FightCache
 from app.config import Config
 
 
+def test_app_starts_poller_on_first_request(monkeypatch):
+    app_module = import_module("app")
+    starts = []
+    monkeypatch.setattr(app_module.cache, "start_polling", starts.append)
+
+    app = app_module.create_app()
+    assert starts == []
+
+    response = app.test_client().get("/healthz")
+
+    assert response.status_code == 200
+    assert starts == [app.config["DEFAULT_SOURCE_URL"]]
+
+
 def test_empty_tatamis_are_skipped_until_manual_refresh(monkeypatch):
     calls = []
 

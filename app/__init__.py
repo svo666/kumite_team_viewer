@@ -35,6 +35,7 @@ def create_app(config_class=Config) -> Flask:
     @app.before_request
     def start_request_timer():
         g.request_started_at = monotonic()
+        cache.start_polling(app.config["DEFAULT_SOURCE_URL"])
 
     @app.after_request
     def log_request_performance(response):
@@ -48,11 +49,6 @@ def create_app(config_class=Config) -> Flask:
                 (monotonic() - started_at) * 1000,
             )
         return response
-
-    # Start one server-side poller per web-service process. Render should run this
-    # project with a single Gunicorn worker so the in-memory cache is shared by
-    # all SSE clients.
-    cache.start_polling(app.config["DEFAULT_SOURCE_URL"])
 
     @app.get("/")
     def index():

@@ -41,7 +41,7 @@ services:
     startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 20 --timeout 300 --keep-alive 75 --access-logfile - --error-logfile -
 ```
 
-Use **one Gunicorn worker**. This is important because the cache and server-side polling thread are in memory. Multiple workers would each create their own poller and cache.
+Use **one Gunicorn worker**. This keeps the in-memory cache shared by all app requests in the service. The poller starts on the first request inside the worker, after Gunicorn has forked it.
 
 ## Environment variables
 
@@ -81,14 +81,15 @@ http://127.0.0.1:5000
 Performance logs are emitted as key-value records in the hosting logs:
 
 ```text
-event=competition_context_fetched status=200 duration_ms=... groups=...
+event=cache_poller_started process_id=... thread_name=kumite-poller interval_seconds=...
+event=upstream_request_completed process_id=... operation=competition_page status=200 duration_ms=... response_bytes=...
 event=tatami_fetch mode=ajax tatami=1 status=200 duration_ms=... records=... fights=...
 event=scrape_completed duration_ms=... total_fights=...
-event=cache_refresh_completed duration_ms=... fights=... disabled_tatamis=...
+event=cache_refresh_completed process_id=... duration_ms=... fights=... disabled_tatamis=...
 event=http_response_ready endpoint=api_refresh status=200 duration_ms=...
 ```
 
-AJAX logs record the per-request duration, returned schedule record count, and parsed fight count. For long-term comparisons, track p50/p95 durations, status codes, timeout/failure counts, and fight counts across refreshes. The HTTP response event measures time until Flask creates the response; for `/api/events` this is stream setup time, not the lifetime of the SSE connection.
+AJAX logs record each upstream request's start, completion/failure, status, response size, and elapsed time, with operation and process ID but no session token. Compare the poller's process ID with the `process_id` in `/api/fights` to confirm that the poller and serving worker share the same cache. Cache snapshots also include elapsed time for an in-progress refresh. For long-term comparisons, track p50/p95 durations, status codes, timeout/failure counts, and fight counts across refreshes. The HTTP response event measures time until Flask creates the response; for `/api/events` this is stream setup time, not the lifetime of the SSE connection.
 
 Source locations in logs omit credentials, query parameters, and fragments so session tokens are not written to logs. The Render Gunicorn access-log format also omits request query strings, and the local Werkzeug access log is suppressed in favor of the safe application request-duration event. Do not add raw URLs or exception messages from HTTP/browser libraries to log records; they may contain sensitive query strings.
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import replace
 from time import monotonic
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -28,16 +29,84 @@ def sanitize_url_for_log(url: str) -> str:
     return f"{parts.scheme}://{hostname}{port}{parts.path}"
 
 
+def _logged_request(
+    operation: str,
+    source_url: str,
+    make_request: Callable[[], requests.Response],
+    tatami_id: int | None = None,
+) -> requests.Response:
+    started_at = monotonic()
+    logger.info(
+        "event=upstream_request_started process_id=%s operation=%s tatami=%s source=%s",
+        os.getpid(),
+        operation,
+        tatami_id,
+        sanitize_url_for_log(source_url),
+    )
+    response = None
+    try:
+        response = make_request()
+        response.raise_for_status()
+    except Exception as exc:
+        logger.error(
+            "event=upstream_request_failed process_id=%s operation=%s tatami=%s "
+            "status=%s duration_ms=%.1f error_type=%s",
+            os.getpid(),
+            operation,
+            tatami_id,
+            response.status_code if response is not None else None,
+            (monotonic() - started_at) * 1000,
+            type(exc).__name__,
+        )
+        raise
+
+    logger.info(
+        "event=upstream_request_completed process_id=%s operation=%s tatami=%s "
+        "status=%s duration_ms=%.1f response_bytes=%s",
+        os.getpid(),
+        operation,
+        tatami_id,
+        response.status_code,
+        (monotonic() - started_at) * 1000,
+        len(response.content),
+    )
+    return response
+
+
 def _response_json(response: requests.Response, operation: str) -> dict:
-    response.raise_for_status()
+    started_at = monotonic()
     try:
         data = response.json()
     except ValueError as exc:
+        logger.error(
+            "event=upstream_json_parse_failed process_id=%s operation=%s error_type=%s",
+            os.getpid(),
+            operation,
+            type(exc).__name__,
+        )
         raise ValueError(f"Competition site returned invalid JSON for {operation}") from exc
     if not isinstance(data, dict):
+        logger.error(
+            "event=upstream_json_invalid process_id=%s operation=%s response_type=%s",
+            os.getpid(),
+            operation,
+            type(data).__name__,
+        )
         raise ValueError(f"Competition site returned an invalid response for {operation}")
     if data in ({"error": "error"}, {"error": "nopermission"}):
+        logger.error(
+            "event=upstream_json_rejected process_id=%s operation=%s",
+            os.getpid(),
+            operation,
+        )
         raise ValueError(f"Competition site rejected {operation}")
+    logger.info(
+        "event=upstream_json_parsed process_id=%s operation=%s duration_ms=%.1f keys=%s",
+        os.getpid(),
+        operation,
+        (monotonic() - started_at) * 1000,
+        len(data),
+    )
     return data
 
 
@@ -47,8 +116,11 @@ def _fetch_competition_context(
 ) -> tuple[str, str, str, dict]:
     safe_url = sanitize_url_for_log(source_url)
     started_at = monotonic()
-    response = session.get(source_url, timeout=Config.REQUEST_TIMEOUT_SECONDS)
-    response.raise_for_status()
+    response = _logged_request(
+        "competition_page",
+        source_url,
+        lambda: session.get(source_url, timeout=Config.REQUEST_TIMEOUT_SECONDS),
+    )
     soup = BeautifulSoup(response.text, "lxml")
     compid = soup.find(id="comp_param_compid")
     session_id = soup.find(id="comp_param_sessionid")
@@ -57,21 +129,29 @@ def _fetch_competition_context(
 
     ajax_url = urljoin(source_url, "z_ajaxcollector.php")
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    groups_response = session.post(
+    groups_response = _logged_request(
+        "competition_groups",
         ajax_url,
-        data={
-            "p": "compgrouplist",
-            "compid": compid["value"],
-            "notsorted": "1",
-            "gencatdesc": "1",
-            "slsession": session_id["value"],
-        },
-        headers=headers,
-        timeout=Config.REQUEST_TIMEOUT_SECONDS,
+        lambda: session.post(
+            ajax_url,
+            data={
+                "p": "compgrouplist",
+                "compid": compid["value"],
+                "notsorted": "1",
+                "gencatdesc": "1",
+                "slsession": session_id["value"],
+            },
+            headers=headers,
+            timeout=Config.REQUEST_TIMEOUT_SECONDS,
+        ),
     )
     groups_data = _response_json(groups_response, "competition groups")
     groups = groups_data.get("compgrouplist")
     if not isinstance(groups, dict):
+        logger.error(
+            "event=upstream_data_invalid process_id=%s operation=competition_groups field=compgrouplist",
+            os.getpid(),
+        )
         raise ValueError("Competition site response did not include competition groups")
 
     logger.info(
@@ -139,26 +219,45 @@ def fetch_all_tatami_fights(source_url: str, tatami_ids: Iterable[int]) -> dict[
 
         for tatami_id in tatami_ids:
             started_at = monotonic()
-            response = session.post(
+            response = _logged_request(
+                "tatami_schedule",
                 ajax_url,
-                data={
-                    "p": "compdrawlistsch",
-                    "compid": compid,
-                    "tatamiid": str(tatami_id),
-                    "slsession": session_id,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=Config.REQUEST_TIMEOUT_SECONDS,
+                lambda: session.post(
+                    ajax_url,
+                    data={
+                        "p": "compdrawlistsch",
+                        "compid": compid,
+                        "tatamiid": str(tatami_id),
+                        "slsession": session_id,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=Config.REQUEST_TIMEOUT_SECONDS,
+                ),
+                tatami_id,
             )
             data = _response_json(response, f"tatami {tatami_id} schedule")
             drawlist = data.get("drawlist")
             if not isinstance(drawlist, (dict, list)):
+                logger.error(
+                    "event=upstream_data_invalid process_id=%s operation=tatami_schedule "
+                    "tatami=%s field=drawlist response_type=%s",
+                    os.getpid(),
+                    tatami_id,
+                    type(drawlist).__name__,
+                )
                 raise ValueError(f"Competition site response did not include tatami {tatami_id} schedule")
 
             fights = []
             records = drawlist.values() if isinstance(drawlist, dict) else drawlist
             for record in records:
                 if not isinstance(record, dict):
+                    logger.error(
+                        "event=upstream_data_invalid process_id=%s operation=tatami_schedule "
+                        "tatami=%s field=drawlist_record response_type=%s",
+                        os.getpid(),
+                        tatami_id,
+                        type(record).__name__,
+                    )
                     raise ValueError(f"Invalid schedule record for tatami {tatami_id}")
                 fight = _fight_from_record(record, groups, tatami_id)
                 if fight is not None:
@@ -191,7 +290,12 @@ def get_fights_by_tatami(
     started_at = monotonic()
     tatami_ids = tuple(tatami_ids)
     safe_url = sanitize_url_for_log(source_url)
-    logger.info("event=scrape_started source=%s tatamis=%s", safe_url, len(tatami_ids))
+    logger.info(
+        "event=scrape_started process_id=%s source=%s tatamis=%s",
+        os.getpid(),
+        safe_url,
+        len(tatami_ids),
+    )
     fights_by_tatami = fetch_all_tatami_fights(source_url, tatami_ids)
 
     logger.info(

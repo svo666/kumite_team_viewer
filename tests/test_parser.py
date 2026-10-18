@@ -74,6 +74,7 @@ def test_ajax_fetch_uses_page_session_and_returns_empty_tatami(monkeypatch):
 
         def __init__(self, data):
             self.data = data
+            self.content = str(data).encode("utf-8")
 
         def raise_for_status(self):
             pass

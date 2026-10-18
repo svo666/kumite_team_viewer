@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
-from threading import Condition, Event, Lock, Thread
+from threading import Condition, Event, Lock, Thread, current_thread
 from time import monotonic
 from typing import Any
 
@@ -36,6 +37,7 @@ class FightCache:
         self._last_updated: datetime | None = None
         self._last_error: str | None = None
         self._last_refresh_monotonic = 0.0
+        self._refresh_started_monotonic: float | None = None
         self._refreshing = False
         self._version = 0
 
@@ -58,7 +60,9 @@ class FightCache:
             )
             self._poller_thread.start()
             logger.info(
-                "Started server-side poller. interval_seconds=%s source=%s",
+                "event=cache_poller_started process_id=%s thread_name=%s interval_seconds=%s source=%s",
+                os.getpid(),
+                self._poller_thread.name,
                 self.poll_seconds,
                 sanitize_url_for_log(self._active_source_url),
             )
@@ -138,10 +142,17 @@ class FightCache:
                 if tatami_id not in self._disabled_tatami_ids
             )
             self._refreshing = True
+            self._refresh_started_monotonic = monotonic()
 
         refresh_started_at = monotonic()
         safe_url = sanitize_url_for_log(source_url)
-        logger.info("event=cache_refresh_started source=%s tatamis=%s", safe_url, len(tatami_ids))
+        logger.info(
+            "event=cache_refresh_started process_id=%s thread_name=%s source=%s tatamis=%s",
+            os.getpid(),
+            current_thread().name,
+            safe_url,
+            len(tatami_ids),
+        )
         try:
             fights_by_tatami = get_fights_by_tatami(source_url, tatami_ids) if tatami_ids else {}
             fights = [fight for tatami_fights in fights_by_tatami.values() for fight in tatami_fights]
@@ -172,8 +183,9 @@ class FightCache:
                 disabled_tatamis = len(self._disabled_tatami_ids)
                 self._condition.notify_all()
             logger.info(
-                "event=cache_refresh_completed source=%s duration_ms=%.1f fights=%s teams=%s "
-                "active_tatamis=%s disabled_tatamis=%s version=%s",
+                "event=cache_refresh_completed process_id=%s source=%s duration_ms=%.1f "
+                "fights=%s teams=%s active_tatamis=%s disabled_tatamis=%s version=%s",
+                os.getpid(),
                 safe_url,
                 (monotonic() - refresh_started_at) * 1000,
                 len(fights),
@@ -185,14 +197,17 @@ class FightCache:
             return True
         except Exception as exc:
             logger.error(
-                "event=cache_refresh_failed source=%s duration_ms=%.1f error_type=%s",
+                "event=cache_refresh_failed process_id=%s thread_name=%s source=%s "
+                "duration_ms=%.1f error_type=%s",
+                os.getpid(),
+                current_thread().name,
                 safe_url,
                 (monotonic() - refresh_started_at) * 1000,
                 type(exc).__name__,
             )
             with self._condition:
                 self._source_url = source_url
-                self._last_error = str(exc)
+                self._last_error = f"Refresh failed ({type(exc).__name__})"
                 self._last_refresh_monotonic = monotonic()
                 self._version += 1
                 self._condition.notify_all()
@@ -200,6 +215,7 @@ class FightCache:
         finally:
             with self._condition:
                 self._refreshing = False
+                self._refresh_started_monotonic = None
                 self._condition.notify_all()
 
     @property
@@ -218,6 +234,12 @@ class FightCache:
                 "last_updated": self._last_updated.isoformat() if self._last_updated else None,
                 "last_error": self._last_error,
                 "refreshing": self._refreshing,
+                "refreshing_for_seconds": (
+                    monotonic() - self._refresh_started_monotonic
+                    if self._refresh_started_monotonic is not None
+                    else 0
+                ),
+                "process_id": os.getpid(),
                 "version": self._version,
                 "server_poll_seconds": self.poll_seconds,
                 "fights": [fight.to_dict() for fight in fights],
@@ -244,6 +266,12 @@ class FightCache:
                 "last_updated": self._last_updated.isoformat() if self._last_updated else None,
                 "last_error": self._last_error,
                 "refreshing": self._refreshing,
+                "refreshing_for_seconds": (
+                    monotonic() - self._refresh_started_monotonic
+                    if self._refresh_started_monotonic is not None
+                    else 0
+                ),
+                "process_id": os.getpid(),
                 "version": self._version,
                 "server_poll_seconds": self.poll_seconds,
                 "fights": [fight.to_dict() for fight in fights],
