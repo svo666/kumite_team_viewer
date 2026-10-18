@@ -19,7 +19,7 @@ class Config:
 
     REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "5"))
     BROWSER_TIMEOUT_SECONDS = int(os.environ.get("BROWSER_TIMEOUT_SECONDS", "5"))
-    TATAMI_FETCH_CONCURRENCY = 3
+    TATAMI_FETCH_CONCURRENCY = 1
 
     USER_AGENT = os.environ.get(
         "USER_AGENT",
